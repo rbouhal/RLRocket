@@ -270,7 +270,7 @@ class Rocket(object):
              state['phi']]
         return np.array(x, dtype=np.float32)/100.
 
-    def render(self, window_name='env', wait_time=1,
+    def render(self, window_name='RLRocket', wait_time=1,
                with_trajectory=True, with_camera_tracking=True,
                crop_scale=0.4):
 
