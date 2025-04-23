@@ -4,6 +4,41 @@ import cv2
 import utils
 
 
+
+class WindField:
+    """
+    Represents a wind field in the rocket environment.
+    Can be either a constant velocity field in a specific area or a temporary gust.
+    """
+    def __init__(self, x_min, x_max, y_min, y_max, vx, vy, duration=None, start_time=None):
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.vx = vx  # x-component of wind velocity
+        self.vy = vy  # y-component of wind velocity
+        self.duration = duration  # None means permanent wind field, otherwise temporary gust
+        self.start_time = start_time  # When the gust starts (in simulation steps)
+        
+    def is_active(self, step_id):
+        """Check if the wind field is active at the current step."""
+        if self.duration is None:  # Permanent wind field
+            return True
+        elif self.start_time <= step_id < self.start_time + self.duration:
+            return True
+        return False
+    
+    def is_in_field(self, x, y):
+        """Check if a point is inside the wind field."""
+        return (self.x_min <= x <= self.x_max) and (self.y_min <= y <= self.y_max)
+    
+    def get_wind_velocity(self, x, y, step_id):
+        """Get wind velocity at a given position and time."""
+        if self.is_active(step_id) and self.is_in_field(x, y):
+            return self.vx, self.vy
+        return 0, 0
+
+
 class Rocket(object):
     """
     Rocekt and environment.
@@ -28,10 +63,13 @@ class Rocket(object):
     """
 
     def __init__(self, max_steps, task='hover', rocket_type='falcon',
-                 viewport_h=768, path_to_bg_img=None):
+                 viewport_h=768, path_to_bg_img=None, enable_wind=True,
+                 wind_difficulty=1):
 
         self.task = task
         self.rocket_type = rocket_type
+        self.enable_wind = enable_wind
+        self.wind_difficulty = wind_difficulty
 
         self.g = 9.8
         self.H = 50  # rocket height (meters)
@@ -70,7 +108,102 @@ class Rocket(object):
         self.bg_img = utils.load_bg_img(path_to_bg_img, w=self.viewport_w, h=self.viewport_h)
 
         self.state_buffer = []
+    
+        self.wind_fields = []
+        self.scheduled_gusts = []
+        if self.enable_wind:
+            self._create_random_wind_fields()
+            
+    def _create_random_wind_fields(self):
+        """Create random wind fields and scheduled gusts."""
+        self.wind_fields = []
+        self.scheduled_gusts = []
+        
+        # Create constant wind fields (jet streams)
+        num_fields = random.randint(0, 2)
+        x_range = self.world_x_max - self.world_x_min
+        y_range = self.world_y_max - self.world_y_min
+        
+        for _ in range(num_fields):
+            # Determine position and size of wind field
+            width = x_range #jet stream
+            height = random.uniform(0.05 * y_range, 0.1 * y_range)
 
+            #uncomment for non jet stream
+            #width = random.uniform(0.05 * x_range, 0.15 * x_range)
+            #center_x = random.uniform(self.world_x_min + width/2, self.world_x_max - width/2)
+
+            # Place fields in the upper two-thirds of the environment
+            center_x = self.world_x_min + x_range/2
+            center_y = random.uniform(self.world_y_min, self.world_y_max)
+            
+            # Wind velocity (stronger with higher difficulty)
+            max_wind = 20.0 * self.wind_difficulty
+            vx = random.uniform(-max_wind, max_wind)*.1
+            vy = random.uniform(-max_wind/2, max_wind/2)  # Vertical wind is usually less strong
+            vy = 0
+            field = WindField(
+                x_min=center_x - width/2,
+                x_max=center_x + width/2,
+                y_min=center_y - height/2,
+                y_max=center_y + height/2,
+                vx=vx,
+                vy=vy
+            )
+            
+            self.wind_fields.append(field)
+        
+        # Schedule random gusts throughout the simulation
+        num_gusts = random.randint(0, 2)
+        for _ in range(num_gusts):
+            # Determine when the gust will occur
+            start_time = random.randint(1, int(self.max_steps * 0.8))
+            duration = random.randint(5, 20)  # Duration in simulation steps
+            
+            # Determine position and size of gust
+            #width = random.uniform(0.2 * x_range, 0.5 * x_range)
+            width = x_range
+            height = random.uniform(0.05 * y_range, 0.1 * y_range)
+            
+            #center_x = random.uniform(self.world_x_min + width/2, self.world_x_max - width/2)
+            center_x = self.world_x_min + x_range/2
+            center_y = random.uniform(self.world_y_min, self.world_y_max)
+            
+            # Gust velocity (stronger with higher difficulty)
+            max_gust = 30.0 * self.wind_difficulty
+            vx = random.uniform(-max_gust, max_gust)*.1
+            vy = random.uniform(-max_gust/2, max_gust/2)
+            vy = 0
+            gust = WindField(
+                x_min=center_x - width/2,
+                x_max=center_x + width/2,
+                y_min=center_y - height/2,
+                y_max=center_y + height/2,
+                vx=vx,
+                vy=vy,
+                duration=duration,
+                start_time=start_time
+            )
+            
+            self.scheduled_gusts.append(gust)
+
+    def _get_wind_velocity(self, x, y):
+        """Get the combined wind velocity at a given position."""
+        vx_total, vy_total = 0, 0
+        
+        # Check constant wind fields
+        for field in self.wind_fields:
+            vx, vy = field.get_wind_velocity(x, y, self.step_id)
+            vx_total += vx
+            vy_total += vy
+            
+        # Check temporary gusts
+        for gust in self.scheduled_gusts:
+            vx, vy = gust.get_wind_velocity(x, y, self.step_id)
+            vx_total += vx
+            vy_total += vy
+            
+        return vx_total, vy_total
 
     def reset(self, state_dict=None):
 
@@ -79,6 +212,9 @@ class Rocket(object):
         else:
             self.state = state_dict
 
+        if self.enable_wind:
+            self._create_random_wind_fields()
+
         self.state_buffer = []
         self.step_id = 0
         self.already_landing = False
@@ -86,16 +222,18 @@ class Rocket(object):
         return self.flatten(self.state)
 
     def create_action_table(self):
-        f0 = 0.2 * self.g  # thrust
-        f1 = 1.0 * self.g
-        f2 = 2 * self.g
+        f0 = 0
+        f1 = 0.2 * self.g  # thrust
+        f2 = 1.0 * self.g
+        f3 = 2 * self.g
         vphi0 = 0  # Nozzle angular velocity
         vphi1 = 30 / 180 * np.pi
         vphi2 = -30 / 180 * np.pi
 
         action_table = [[f0, vphi0], [f0, vphi1], [f0, vphi2],
                         [f1, vphi0], [f1, vphi1], [f1, vphi2],
-                        [f2, vphi0], [f2, vphi1], [f2, vphi2]
+                        [f2, vphi0], [f2, vphi1], [f2, vphi2],
+                        [f3, vphi0], [f3, vphi1], [f3, vphi2]
                         ]
         return action_table
 
@@ -109,6 +247,7 @@ class Rocket(object):
         y_range = self.world_y_max - self.world_y_min
         xc = (self.world_x_max + self.world_x_min) / 2.0
         yc = (self.world_y_max + self.world_y_min) / 2.0
+
 
         if self.task == 'landingai':
             x = random.uniform(xc - x_range / 4.0, xc + x_range / 4.0)
@@ -129,7 +268,8 @@ class Rocket(object):
             'x': x, 'y': y, 'vx': 0, 'vy': vy,
             'theta': theta, 'vtheta': 0,
             'phi': 0, 'f': 0,
-            't': 0, 'a_': 0
+            't': 0, 'a_': 0,
+            'wind_vx': 0, 'wind_vy': 0  # Track current wind velocity for display
         }
 
         return state
@@ -185,17 +325,33 @@ class Rocket(object):
         # dist between agent and target point
         dist_x = abs(state['x'] - self.target_x)
         dist_y = abs(state['y'] - self.target_y)
-        dist_norm = dist_x / x_range + dist_y / y_range
+        dist_norm = np.sqrt((dist_x / x_range)**2 + (dist_y / y_range)**2)
 
         dist_reward = 0.1*(1.0 - dist_norm)
+        dist_reward = .2 * np.exp(-dist_norm)
 
+        # Current angle and angular velocity
+        theta = state['theta']
+        vtheta = state['vtheta']
+        moving_away = (theta * vtheta > 0)
         if abs(state['theta']) <= np.pi / 6.0:
             pose_reward = 0.1
         else:
             pose_reward = abs(state['theta']) / (0.5*np.pi)
             pose_reward = 0.1 * (1.0 - pose_reward)
 
-        reward = dist_reward + pose_reward
+
+        thrust = self.action_table[state['action_']][0]/ (np.max(np.array(self.action_table)[:,0]))
+        fuel_penalty = -thrust * .05
+        
+        ang_v = abs(vtheta)
+        if moving_away:
+            ang_v_penalty = -ang_v * 0.4  # Higher penalty when moving away
+        else:
+            ang_v_penalty = +ang_v * 0.15  # Lower penalty when moving toward target
+        
+
+        reward = dist_reward + pose_reward + fuel_penalty +ang_v_penalty
 
         if self.task == 'hover' and (dist_x**2 + dist_y**2)**0.5 <= 2*self.target_r:  # hit target
             reward = 0.25
@@ -213,11 +369,9 @@ class Rocket(object):
         return reward
 
     def step(self, action):
-
         x, y, vx, vy = self.state['x'], self.state['y'], self.state['vx'], self.state['vy']
         theta, vtheta = self.state['theta'], self.state['vtheta']
         phi = self.state['phi']
-
         f, vphi = self.action_table[action]
 
         ft, fr = -f*np.sin(phi), f*np.cos(phi)
@@ -227,6 +381,16 @@ class Rocket(object):
         rho = 1 / (125/(self.g/2.0))**0.5  # suppose after 125 m free fall, then air resistance = mg
         ax, ay = fx-rho*vx, fy-self.g-rho*vy
         atheta = ft*self.H/2 / self.I
+
+        # Apply wind effects if enabled
+        wind_vx, wind_vy = 0, 0
+        if self.enable_wind:
+            wind_vx, wind_vy = self._get_wind_velocity(self.state['x'], self.state['y'])
+            self.state['wind_vx'], self.state['wind_vy'] = wind_vx, wind_vy
+
+        # Relative velocity including wind
+        vx = vx + wind_vx
+        vy = vy + wind_vy
 
         # update agent
         if self.already_landing:
@@ -249,7 +413,8 @@ class Rocket(object):
             'x': x_new, 'y': y_new, 'vx': vx_new, 'vy': vy_new,
             'theta': theta_new, 'vtheta': vtheta_new,
             'phi': phi, 'f': f,
-            't': self.step_id, 'action_': action
+            't': self.step_id, 'action_': action,
+            'wind_vx': wind_vx, 'wind_vy': wind_vy
         }
         self.state_buffer.append(self.state)
 
@@ -272,11 +437,13 @@ class Rocket(object):
 
     def render(self, window_name='RLRocket', wait_time=1,
                with_trajectory=True, with_camera_tracking=True,
-               crop_scale=0.4):
+               crop_scale=0.4, show_wind = True):
 
         canvas = np.copy(self.bg_img)
         polys = self.create_polygons()
-
+        #draw wind fields
+        if show_wind and self.enable_wind:
+            self.draw_wind_fields(canvas)
         # draw target region
         for poly in polys['target_region']:
             self.draw_a_polygon(canvas, poly)
@@ -309,6 +476,79 @@ class Rocket(object):
         cv2.waitKey(wait_time)
         return frame_0, frame_1
 
+    def draw_wind_fields(self, canvas):
+        """Draw wind fields and gusts with visual indicators."""
+        # Draw permanent wind fields
+        for field in self.wind_fields:
+            # Skip if not active
+            if not field.is_active(self.step_id):
+                continue
+            
+            # Convert world coordinates to pixels
+            x1, y1 = self.wd2pxl([[field.x_min, field.y_min]])[0]
+            x2, y2 = self.wd2pxl([[field.x_max, field.y_max]])[0]
+            
+            # Draw semi-transparent blue box for wind field
+            overlay = canvas.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (200, 100, 50), -1)  # Light blue
+            alpha = 0.15  # Transparency
+            cv2.addWeighted(overlay, alpha, canvas, 1 - alpha, 0, canvas)
+            
+            # Draw arrows to indicate wind direction
+            wind_magnitude = np.sqrt(field.vx**2 + field.vy**2)
+            if wind_magnitude > 0:
+                arrow_spacing = 4  # pixels
+                arrow_length = min(30, max(10, int(wind_magnitude * 0.8)))  # Scale with wind strength
+                
+                # Draw a grid of arrows
+                for ix in range(x1 + arrow_spacing, x2, arrow_spacing):
+                    for iy in range(y1 + arrow_spacing, y2, arrow_spacing):
+                        # Calculate arrow end point
+                        angle = np.arctan2(field.vy, field.vx)
+                        ex = int(ix + arrow_length * np.cos(angle))
+                        ey = int(iy + arrow_length * np.sin(angle))
+                        
+                        # Draw arrow
+                        cv2.arrowedLine(canvas, (ix, iy), (ex, ey), 
+                                      (0, 0, 255), 1, tipLength=0.3)
+        
+        # Draw temporary gusts
+        for gust in self.scheduled_gusts:
+            # Skip if not active
+            if not gust.is_active(self.step_id):
+                continue
+            
+
+            # Convert world coordinates to pixels
+            x1, y1 = self.wd2pxl([[gust.x_min, gust.y_min]])[0]
+            x2, y2 = self.wd2pxl([[gust.x_max, gust.y_max]])[0]
+            print(y1,'gust', y2)
+            # Draw semi-transparent red box for gusts
+            overlay = canvas.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (50, 50, 220), -1)  # Light red
+            
+            # Calculate alpha based on remaining duration (fade out)
+            remaining = gust.start_time + gust.duration - self.step_id
+            alpha = 0.3 * (remaining / gust.duration)
+            cv2.addWeighted(overlay, alpha, canvas, 1 - alpha, 0, canvas)
+            
+            # Draw arrows to indicate wind direction
+            wind_magnitude = np.sqrt(gust.vx**2 + gust.vy**2)
+            if wind_magnitude > 0:
+                arrow_spacing = 3  # pixels
+                arrow_length = min(40, max(15, int(wind_magnitude)))  # Scale with wind strength
+                
+                # Draw a grid of arrows
+                for ix in range(x1 + arrow_spacing, x2, arrow_spacing):
+                    for iy in range(y1 + arrow_spacing, y2, arrow_spacing):
+                        # Calculate arrow end point
+                        angle = np.arctan2(gust.vy, gust.vx)
+                        ex = int(ix + arrow_length * np.cos(angle))
+                        ey = int(iy + arrow_length * np.sin(angle))
+                        
+                        # Draw arrow
+                        cv2.arrowedLine(canvas, (ix, iy), (ex, ey), 
+                                      (0, 0, 255), 2, tipLength=0.3)
     def create_polygons(self):
 
         polys = {'rocket': [], 'engine_work': [], 'target_region': []}
